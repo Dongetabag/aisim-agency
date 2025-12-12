@@ -1,9 +1,17 @@
 'use client'
 
-import { useState, useEffect } from 'react'
-import { useSearchParams } from 'next/navigation'
-import { Check, ArrowRight, Sparkles, CreditCard } from 'lucide-react'
+import { Suspense } from 'react'
+import { Sparkles, Loader2 } from 'lucide-react'
 import SmartIntakeForm from '@/components/SmartIntakeForm'
+
+function IntakeFormLoading() {
+  return (
+    <div className="bg-white rounded-lg shadow-xl p-12 text-center">
+      <Loader2 className="w-8 h-8 text-primary-600 animate-spin mx-auto mb-4" />
+      <p className="text-gray-600">Loading intake form...</p>
+    </div>
+  )
+}
 
 export default function IntakePage() {
   return (
@@ -17,14 +25,15 @@ export default function IntakePage() {
             Smart Project Intake Form
           </h1>
           <p className="text-xl text-gray-600 max-w-2xl mx-auto">
-            Tell us about your project, and we'll intelligently match you with the perfect 
+            Tell us about your project, and we'll intelligently match you with the perfect
             agency-quality deliverables. Purchase instantly when you're ready.
           </p>
         </div>
-        
-        <SmartIntakeForm />
+
+        <Suspense fallback={<IntakeFormLoading />}>
+          <SmartIntakeForm />
+        </Suspense>
       </div>
     </div>
   )
 }
-
