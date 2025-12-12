@@ -1,0 +1,440 @@
+{
+  "name": "AISim Agency - Lead Capture & Nurture Automation",
+  "description": "Complete n8n workflow suite for automated lead capture, CRM sync, and email nurture sequences",
+  "workflows": [
+    {
+      "workflow_id": 1,
+      "name": "Website Lead Capture → CRM",
+      "trigger": "Webhook (Form Submission)",
+      "nodes": [
+        {
+          "name": "Webhook Trigger",
+          "type": "n8n-nodes-base.webhook",
+          "config": {
+            "path": "lead-capture",
+            "method": "POST"
+          }
+        },
+        {
+          "name": "Validate Lead Data",
+          "type": "n8n-nodes-base.if",
+          "config": {
+            "conditions": [
+              { "field": "email", "operation": "isNotEmpty" },
+              { "field": "name", "operation": "isNotEmpty" }
+            ]
+          }
+        },
+        {
+          "name": "Enrich Lead (Clearbit)",
+          "type": "n8n-nodes-base.clearbit",
+          "config": {
+            "operation": "enrich",
+            "email": "={{$json.email}}"
+          }
+        },
+        {
+          "name": "Score Lead",
+          "type": "n8n-nodes-base.code",
+          "config": {
+            "code": "let score = 0;\nif ($json.company_size > 10) score += 20;\nif ($json.company_revenue > 500000) score += 30;\nif ($json.source === 'pricing_page') score += 25;\nif ($json.industry === 'technology') score += 15;\n$json.lead_score = score;\nreturn $json;"
+          }
+        },
+        {
+          "name": "Create HubSpot Contact",
+          "type": "n8n-nodes-base.hubspot",
+          "config": {
+            "operation": "create",
+            "resource": "contact",
+            "properties": {
+              "email": "={{$json.email}}",
+              "firstname": "={{$json.first_name}}",
+              "lastname": "={{$json.last_name}}",
+              "company": "={{$json.company}}",
+              "lead_score": "={{$json.lead_score}}",
+              "lifecyclestage": "lead"
+            }
+          }
+        },
+        {
+          "name": "Route by Score",
+          "type": "n8n-nodes-base.switch",
+          "config": {
+            "rules": [
+              { "condition": "lead_score >= 60", "output": "Hot Lead" },
+              { "condition": "lead_score >= 30", "output": "Warm Lead" },
+              { "condition": "lead_score < 30", "output": "Cold Lead" }
+            ]
+          }
+        },
+        {
+          "name": "Slack Alert (Hot Leads)",
+          "type": "n8n-nodes-base.slack",
+          "config": {
+            "channel": "#sales-alerts",
+            "message": "🔥 Hot Lead Alert!\n*{{$json.first_name}} {{$json.last_name}}* from *{{$json.company}}*\nScore: {{$json.lead_score}}\nEmail: {{$json.email}}\n<https://app.hubspot.com/contacts|View in HubSpot>"
+          }
+        },
+        {
+          "name": "Add to Email Sequence",
+          "type": "n8n-nodes-base.mailchimp",
+          "config": {
+            "operation": "addMember",
+            "list": "AISim Leads",
+            "email": "={{$json.email}}",
+            "tags": ["new-lead", "={{$json.lead_tier}}"]
+          }
+        }
+      ]
+    },
+    {
+      "workflow_id": 2,
+      "name": "Email Nurture Sequence",
+      "trigger": "Schedule (Daily at 9am)",
+      "nodes": [
+        {
+          "name": "Schedule Trigger",
+          "type": "n8n-nodes-base.scheduleTrigger",
+          "config": {
+            "rule": "0 9 * * *"
+          }
+        },
+        {
+          "name": "Get Leads Due for Email",
+          "type": "n8n-nodes-base.hubspot",
+          "config": {
+            "operation": "search",
+            "resource": "contact",
+            "filters": [
+              { "property": "nurture_status", "operator": "EQ", "value": "active" },
+              { "property": "next_email_date", "operator": "LTE", "value": "TODAY" }
+            ]
+          }
+        },
+        {
+          "name": "Loop Through Leads",
+          "type": "n8n-nodes-base.splitInBatches",
+          "config": {
+            "batchSize": 1
+          }
+        },
+        {
+          "name": "Determine Email Template",
+          "type": "n8n-nodes-base.switch",
+          "config": {
+            "rules": [
+              { "condition": "email_count == 0", "output": "Welcome Email" },
+              { "condition": "email_count == 1", "output": "Value Email 1" },
+              { "condition": "email_count == 2", "output": "Case Study" },
+              { "condition": "email_count == 3", "output": "Offer Email" },
+              { "condition": "email_count >= 4", "output": "Re-engagement" }
+            ]
+          }
+        },
+        {
+          "name": "Send Email (SendGrid)",
+          "type": "n8n-nodes-base.sendGrid",
+          "config": {
+            "to": "={{$json.email}}",
+            "from": "hello@aisim.agency",
+            "templateId": "={{$json.template_id}}",
+            "dynamicData": {
+              "first_name": "={{$json.first_name}}",
+              "company": "={{$json.company}}"
+            }
+          }
+        },
+        {
+          "name": "Update HubSpot",
+          "type": "n8n-nodes-base.hubspot",
+          "config": {
+            "operation": "update",
+            "resource": "contact",
+            "properties": {
+              "last_email_sent": "={{$now}}",
+              "email_count": "={{$json.email_count + 1}}",
+              "next_email_date": "={{$now.plus({days: 3})}}"
+            }
+          }
+        },
+        {
+          "name": "Log Activity",
+          "type": "n8n-nodes-base.googleSheets",
+          "config": {
+            "operation": "append",
+            "spreadsheetId": "1abc123...",
+            "sheetName": "Email Log",
+            "data": {
+              "date": "={{$now}}",
+              "email": "={{$json.email}}",
+              "template": "={{$json.template_name}}",
+              "status": "sent"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "workflow_id": 3,
+      "name": "Social Media Auto-Poster",
+      "trigger": "Webhook (New Blog Post)",
+      "nodes": [
+        {
+          "name": "New Blog Trigger",
+          "type": "n8n-nodes-base.webhook",
+          "config": {
+            "path": "new-blog-post",
+            "method": "POST"
+          }
+        },
+        {
+          "name": "Generate Social Posts (OpenAI)",
+          "type": "n8n-nodes-base.openAi",
+          "config": {
+            "model": "gpt-4",
+            "prompt": "Create 3 social media posts for the following blog article. Include:\n1. LinkedIn post (professional, 150-200 words)\n2. Twitter post (engaging, under 280 chars)\n3. Instagram caption (casual, include emojis)\n\nBlog Title: {{$json.title}}\nBlog Summary: {{$json.excerpt}}\nBlog URL: {{$json.url}}"
+          }
+        },
+        {
+          "name": "Parse Response",
+          "type": "n8n-nodes-base.code",
+          "config": {
+            "code": "const posts = $json.response.split('---');\nreturn {\n  linkedin: posts[0].trim(),\n  twitter: posts[1].trim(),\n  instagram: posts[2].trim(),\n  url: $json.url\n};"
+          }
+        },
+        {
+          "name": "Post to LinkedIn",
+          "type": "n8n-nodes-base.linkedIn",
+          "config": {
+            "operation": "post",
+            "text": "={{$json.linkedin}}",
+            "url": "={{$json.url}}"
+          }
+        },
+        {
+          "name": "Post to Twitter",
+          "type": "n8n-nodes-base.twitter",
+          "config": {
+            "operation": "tweet",
+            "text": "={{$json.twitter}}"
+          }
+        },
+        {
+          "name": "Schedule Instagram (Buffer)",
+          "type": "n8n-nodes-base.httpRequest",
+          "config": {
+            "url": "https://api.buffer.com/1/updates/create.json",
+            "method": "POST",
+            "body": {
+              "text": "={{$json.instagram}}",
+              "profile_ids": ["instagram_profile_id"],
+              "scheduled_at": "={{$now.plus({hours: 2})}}"
+            }
+          }
+        },
+        {
+          "name": "Log to Airtable",
+          "type": "n8n-nodes-base.airtable",
+          "config": {
+            "operation": "create",
+            "table": "Social Posts",
+            "fields": {
+              "Blog Title": "={{$json.title}}",
+              "LinkedIn Status": "Posted",
+              "Twitter Status": "Posted",
+              "Instagram Status": "Scheduled",
+              "Date": "={{$now}}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "workflow_id": 4,
+      "name": "Meeting Booked → Onboarding",
+      "trigger": "Webhook (Calendly)",
+      "nodes": [
+        {
+          "name": "Calendly Webhook",
+          "type": "n8n-nodes-base.webhook",
+          "config": {
+            "path": "calendly-booking",
+            "method": "POST"
+          }
+        },
+        {
+          "name": "Update HubSpot Stage",
+          "type": "n8n-nodes-base.hubspot",
+          "config": {
+            "operation": "update",
+            "resource": "contact",
+            "email": "={{$json.invitee.email}}",
+            "properties": {
+              "lifecyclestage": "salesqualifiedlead",
+              "meeting_booked": "true",
+              "meeting_date": "={{$json.event.start_time}}"
+            }
+          }
+        },
+        {
+          "name": "Create Deal",
+          "type": "n8n-nodes-base.hubspot",
+          "config": {
+            "operation": "create",
+            "resource": "deal",
+            "properties": {
+              "dealname": "{{$json.invitee.name}} - Strategy Call",
+              "pipeline": "default",
+              "dealstage": "appointmentscheduled",
+              "amount": "4999"
+            }
+          }
+        },
+        {
+          "name": "Send Confirmation Email",
+          "type": "n8n-nodes-base.sendGrid",
+          "config": {
+            "to": "={{$json.invitee.email}}",
+            "from": "hello@aisim.agency",
+            "templateId": "d-meeting-confirmation",
+            "dynamicData": {
+              "name": "={{$json.invitee.name}}",
+              "meeting_time": "={{$json.event.start_time}}",
+              "meeting_link": "={{$json.event.location}}"
+            }
+          }
+        },
+        {
+          "name": "Create Notion Prep Doc",
+          "type": "n8n-nodes-base.notion",
+          "config": {
+            "operation": "create",
+            "database": "Meeting Prep",
+            "properties": {
+              "Name": "={{$json.invitee.name}}",
+              "Company": "={{$json.invitee.company}}",
+              "Meeting Date": "={{$json.event.start_time}}",
+              "Status": "Pending Prep",
+              "Notes": "={{$json.questions_and_answers}}"
+            }
+          }
+        },
+        {
+          "name": "Slack Notification",
+          "type": "n8n-nodes-base.slack",
+          "config": {
+            "channel": "#meetings",
+            "message": "📅 New Strategy Call Booked!\n*{{$json.invitee.name}}* from *{{$json.invitee.company}}*\n🗓 {{$json.event.start_time}}\n<{{$json.notion_url}}|View Prep Doc>"
+          }
+        }
+      ]
+    },
+    {
+      "workflow_id": 5,
+      "name": "Invoice Paid → Client Onboarding",
+      "trigger": "Webhook (Stripe)",
+      "nodes": [
+        {
+          "name": "Stripe Webhook",
+          "type": "n8n-nodes-base.webhook",
+          "config": {
+            "path": "stripe-payment",
+            "method": "POST"
+          }
+        },
+        {
+          "name": "Filter Event Type",
+          "type": "n8n-nodes-base.if",
+          "config": {
+            "conditions": [
+              { "field": "type", "operation": "equals", "value": "checkout.session.completed" }
+            ]
+          }
+        },
+        {
+          "name": "Update HubSpot to Customer",
+          "type": "n8n-nodes-base.hubspot",
+          "config": {
+            "operation": "update",
+            "resource": "contact",
+            "email": "={{$json.data.object.customer_email}}",
+            "properties": {
+              "lifecyclestage": "customer",
+              "purchase_date": "={{$now}}",
+              "purchase_amount": "={{$json.data.object.amount_total / 100}}"
+            }
+          }
+        },
+        {
+          "name": "Create Project in Notion",
+          "type": "n8n-nodes-base.notion",
+          "config": {
+            "operation": "create",
+            "database": "Client Projects",
+            "properties": {
+              "Client": "={{$json.customer_name}}",
+              "Service": "={{$json.product_name}}",
+              "Status": "Onboarding",
+              "Start Date": "={{$now}}",
+              "Due Date": "={{$now.plus({days: 14})}}"
+            }
+          }
+        },
+        {
+          "name": "Send Welcome Email",
+          "type": "n8n-nodes-base.sendGrid",
+          "config": {
+            "to": "={{$json.customer_email}}",
+            "from": "hello@aisim.agency",
+            "templateId": "d-welcome-client",
+            "dynamicData": {
+              "name": "={{$json.customer_name}}",
+              "service": "={{$json.product_name}}",
+              "onboarding_link": "https://aisim.agency/onboarding"
+            }
+          }
+        },
+        {
+          "name": "Assign in ClickUp",
+          "type": "n8n-nodes-base.clickUp",
+          "config": {
+            "operation": "create",
+            "list": "Client Onboarding",
+            "task": {
+              "name": "Onboard {{$json.customer_name}} - {{$json.product_name}}",
+              "assignees": ["team_member_id"],
+              "due_date": "={{$now.plus({days: 2})}}"
+            }
+          }
+        },
+        {
+          "name": "Slack Celebration",
+          "type": "n8n-nodes-base.slack",
+          "config": {
+            "channel": "#wins",
+            "message": "🎉 New Client Alert!\n*{{$json.customer_name}}* just purchased *{{$json.product_name}}*\n💰 ${{$json.amount}}\n\nLet's deliver an amazing experience! 🚀"
+          }
+        }
+      ]
+    }
+  ],
+  "integrations_used": [
+    "HubSpot CRM",
+    "Calendly",
+    "SendGrid",
+    "Slack",
+    "OpenAI",
+    "LinkedIn",
+    "Twitter",
+    "Buffer",
+    "Notion",
+    "Stripe",
+    "ClickUp",
+    "Google Sheets",
+    "Airtable",
+    "Clearbit"
+  ],
+  "estimated_time_savings": "40+ hours/week",
+  "setup_time": "7-10 business days",
+  "support_included": "30 days"
+}
